@@ -143,7 +143,7 @@ impl App {
         tokio::select! {
             res = grpc_server_handle => {
                 let inner_res = res.context("gRPC sunucu görevi panic'ledi")?;
-                if let Err(e) = inner_res { return Err(e); }
+                inner_res?;
                 error!(event = "UNEXPECTED_SHUTDOWN", "gRPC sunucusu beklenmedik şekilde sonlandı!");
             },
             res = http_server_handle => {

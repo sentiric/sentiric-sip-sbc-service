@@ -38,13 +38,14 @@ impl MediaHandler {
         let mut extracted_port = 0u16;
 
         for line in sdp_str.lines() {
-            if line.starts_with("c=IN IP4 ") {
-                extracted_ip = line[9..].trim();
+            // [CLIPPY FIX]: manual_strip
+            if let Some(stripped) = line.strip_prefix("c=IN IP4 ") {
+                extracted_ip = stripped.trim();
             }
-            if line.starts_with("m=audio ") {
-                extracted_port = line
+            if let Some(stripped) = line.strip_prefix("m=audio ") {
+                extracted_port = stripped
                     .split_whitespace()
-                    .nth(1)
+                    .next()
                     .and_then(|p| p.parse().ok())
                     .unwrap_or(0);
             }

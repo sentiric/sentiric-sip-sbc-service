@@ -5,7 +5,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::UdpSocket;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 fn is_internal_ip(ip: IpAddr) -> bool {
     match ip {
@@ -159,18 +159,6 @@ async fn run_relay_loop(
     let socket = UdpSocket::bind(&addr).await?;
     let mut buf = [0u8; 2048];
 
-    // =========================================================================
-    // [ARCH-COMPLIANCE] MİMARİ KARAR: "STRICT SYMMETRIC LATCHING" (Kesin Kilit)
-    // =========================================================================
-    // SORUN: Geleneksel latching mantığı (peer != src koşulu), karşı makinenin
-    // hem RTP (Ses, örn: port 50010) hem de RTCP (Kontrol, örn: port 50012)
-    // paketlerini art arda göndermesi durumunda sürekli port değiştirmeye
-    // ("Port Flapping") neden oluyordu. Bu da sesin kesilmesine yol açar.
-    //
-    // ÇÖZÜM: IP adresi değişmediği sürece (Media Server Failover hariç),
-    // farklı bir porttan (RTCP) gelen paketlere izin verilir ancak HEDEF
-    // kilitlenmiş ana RTP portundan KESİNLİKLE saptırılmaz.
-    // =========================================================================
     let mut peer_external: Option<SocketAddr> = None;
     let mut external_latched = false;
 
@@ -179,7 +167,7 @@ async fn run_relay_loop(
 
     let timeout = Duration::from_secs(60);
 
-    debug!(
+    tracing::debug!(
         event = "RTP_SOCKET_BOUND",
         sip.call_id = %call_id,
         rtp.port = port,
@@ -188,26 +176,21 @@ async fn run_relay_loop(
 
     if let Some(target) = initial_peer {
         if is_internal_ip(target.ip()) {
-            info!(
+            tracing::info!(
                 event="RTP_PRE_LATCH",
                 sip.call_id = %call_id,
                 target=%target,
                 "🏢 İç Hedef tespit edildi. Sinyal bekleniyor."
             );
             peer_internal = Some(target);
-            // SİLİNDİ: dummy rtp gönderimi
         } else {
-            info!(
+            tracing::info!(
                 event="RTP_PRE_LATCH",
                 sip.call_id = %call_id,
                 target=%target,
                 "🌍 Dış Hedef tespit edildi. Sinyal bekleniyor."
             );
             peer_external = Some(target);
-            // [ARCH-COMPLIANCE] CRITICAL FIX: Dış ağlara (Özellikle Operatör Trunk'larına)
-            // sahte/çöp (dummy) RTP paketi atmak YASAKTIR. Bu işlem operatör DSP'lerini çökertir
-            // (Çat sesi) ve çağrının güvenlik nedeniyle düşürülmesine neden olur.
-            // NAT delme işlemini 'media-service' yasal paketlerle kendisi halleder.
         }
     }
 
@@ -219,27 +202,20 @@ async fn run_relay_loop(
                     Ok(Ok((len, src))) => {
                         let is_internal = is_internal_ip(src.ip());
 
+                        // [ARCH-COMPLIANCE FIX]: RTCP paketlerini (Payload Type 192-205) tespit et.
+                        let is_rtcp = len >= 2 && (buf[0] >> 6 == 2) && (buf[1] >= 192 && buf[1] <= 205);
+
                         if is_internal {
-                            // ------------------------------------------------
-                            // İÇERİDEN GELEN PAKET (Media Service -> SBC)
-                            // ------------------------------------------------
                             let is_docker_gw = is_docker_gateway(src.ip());
 
+                            // [CLIPPY FIX]: if-same-then-else ve needless_bool çözümü
                             let should_latch = match peer_internal {
-                                None => !is_docker_gw,
-                                Some(curr) => {
-                                    if !internal_latched && !is_docker_gw {
-                                        true // SDP tahmini bitti, gerçek paketle kalıcı kilit
-                                    } else if curr.ip() != src.ip() && !is_docker_gw {
-                                        true // Media Service IP'si değişti (Container Failover vs)
-                                    } else {
-                                        false // Aynı IP'den RTCP/farklı port geldi. FLAP ENGELLENDİ!
-                                    }
-                                }
+                                None => !is_docker_gw && !is_rtcp,
+                                Some(curr) => !is_docker_gw && !is_rtcp && (!internal_latched || curr.ip() != src.ip()),
                             };
 
                             if should_latch {
-                                info!(
+                                tracing::info!(
                                     event = "RTP_LATCH_INTERNAL",
                                     trace_id = %call_id,
                                     sip.call_id = %call_id,
@@ -252,10 +228,9 @@ async fn run_relay_loop(
                                 internal_latched = true;
                             }
 
-                            // Medyayı Dışarıya Gönder
                             if let Some(dst) = peer_external {
                                 if let Err(e) = socket.send_to(&buf[..len], dst).await {
-                                    warn!(
+                                    tracing::warn!(
                                         event = "RTP_UDP_SEND_ERROR",
                                         sip.call_id = %call_id,
                                         rtp.port = port,
@@ -267,24 +242,14 @@ async fn run_relay_loop(
                             }
 
                         } else {
-                            // ------------------------------------------------
-                            // DIŞARIDAN GELEN PAKET (UAC / Trunk -> SBC)
-                            // ------------------------------------------------
+                            // [CLIPPY FIX]: if-same-then-else ve needless_bool çözümü
                             let should_latch = match peer_external {
-                                None => true,
-                                Some(curr) => {
-                                    if !external_latched {
-                                        true
-                                    } else if curr.ip() != src.ip() {
-                                        true // Dış kullanıcının IP'si değişti (Network handover / 4G)
-                                    } else {
-                                        false // Aynı dış IP'den farklı port geldi (RTCP). FLAP ENGELLENDİ!
-                                    }
-                                }
+                                None => !is_rtcp,
+                                Some(curr) => !is_rtcp && (!external_latched || curr.ip() != src.ip()),
                             };
 
                             if should_latch {
-                                info!(
+                                tracing::info!(
                                     event = "RTP_LATCH_EXTERNAL",
                                     trace_id = %call_id,
                                     sip.call_id = %call_id,
@@ -297,10 +262,9 @@ async fn run_relay_loop(
                                 external_latched = true;
                             }
 
-                            // Medyayı İçeriye Gönder
                             if let Some(dst) = peer_internal {
                                 if let Err(e) = socket.send_to(&buf[..len], dst).await {
-                                    warn!(
+                                    tracing::warn!(
                                         event = "RTP_UDP_SEND_ERROR",
                                         sip.call_id = %call_id,
                                         rtp.port = port,
@@ -314,7 +278,7 @@ async fn run_relay_loop(
                     }
                     Ok(Err(_)) => break,
                     Err(_) => {
-                        warn!(
+                        tracing::warn!(
                             event = "RTP_RELAY_TIMEOUT",
                             trace_id = %call_id,
                             sip.call_id = %call_id,
@@ -326,7 +290,7 @@ async fn run_relay_loop(
                 }
             }
         }
-    } // loop kapaması eklendi (Önceki hatanın sebebi burasıydı)
+    }
 
     Ok(())
 }

@@ -19,6 +19,13 @@ pub struct DnsCache {
     cache: DashMap<String, (SocketAddr, Instant)>,
 }
 
+// [CLIPPY FIX]: new_without_default
+impl Default for DnsCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 // [ARCH-COMPLIANCE] resolve fonksiyonu call_id argümanı alacak şekilde güncellendi.
 impl DnsCache {
     pub fn new() -> Self {

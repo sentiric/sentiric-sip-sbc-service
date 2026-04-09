@@ -105,13 +105,19 @@ where
             .and_then(|v| v.as_str().map(|s| s.to_string()))
             .unwrap_or_else(String::new);
 
-        let trace_id = if let Some(tid) = visitor.fields.get("trace_id").and_then(|v| v.as_str()) {
-            Some(tid.to_string())
-        } else if let Some(cid) = visitor.fields.get("sip.call_id").and_then(|v| v.as_str()) {
-            Some(cid.to_string())
-        } else {
-            None
-        };
+        // [CLIPPY FIX]: manual_map
+        let trace_id = visitor
+            .fields
+            .get("trace_id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .or_else(|| {
+                visitor
+                    .fields
+                    .get("sip.call_id")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+            });
 
         // [ARCH-COMPLIANCE] span_id ihlali düzeltildi. Aktif context'ten span_id alınıyor.
         let span_id = ctx
