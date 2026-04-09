@@ -1440,8 +1440,8 @@ checksum = "d767eb0aabc880b29956c35734170f26ed551a859dbd361d140cdbeca61ab1e2"
 
 [[package]]
 name = "sentiric-contracts"
-version = "1.17.0"
-source = "git+https://github.com/sentiric/sentiric-contracts.git?tag=v1.17.0#df359327faa3d0cbf2704fa5b148b7c6cceedc8f"
+version = "1.20.8"
+source = "git+https://github.com/sentiric/sentiric-contracts.git?tag=v1.20.8#98e94da9883fb99de13a9d70dd9c29b3ed4f53ea"
 dependencies = [
  "prost",
  "prost-types",
@@ -1475,7 +1475,7 @@ dependencies = [
 
 [[package]]
 name = "sentiric-sip-sbc-service"
-version = "1.5.16"
+version = "1.5.17"
 dependencies = [
  "anyhow",
  "chrono",

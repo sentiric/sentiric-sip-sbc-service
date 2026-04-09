@@ -5,7 +5,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::UdpSocket;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 fn is_internal_ip(ip: IpAddr) -> bool {
     match ip {
@@ -29,13 +29,6 @@ fn is_internal_ip(ip: IpAddr) -> bool {
             false
         }
         IpAddr::V6(ipv6) => ipv6.is_loopback(),
-    }
-}
-
-fn is_docker_gateway(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => v4.octets()[3] == 1,
-        _ => false,
     }
 }
 
@@ -167,7 +160,7 @@ async fn run_relay_loop(
 
     let timeout = Duration::from_secs(60);
 
-    tracing::debug!(
+    debug!(
         event = "RTP_SOCKET_BOUND",
         sip.call_id = %call_id,
         rtp.port = port,
@@ -176,7 +169,7 @@ async fn run_relay_loop(
 
     if let Some(target) = initial_peer {
         if is_internal_ip(target.ip()) {
-            tracing::info!(
+            info!(
                 event="RTP_PRE_LATCH",
                 sip.call_id = %call_id,
                 target=%target,
@@ -184,7 +177,7 @@ async fn run_relay_loop(
             );
             peer_internal = Some(target);
         } else {
-            tracing::info!(
+            info!(
                 event="RTP_PRE_LATCH",
                 sip.call_id = %call_id,
                 target=%target,
@@ -202,38 +195,28 @@ async fn run_relay_loop(
                     Ok(Ok((len, src))) => {
                         let is_internal = is_internal_ip(src.ip());
 
-                        // [ARCH-COMPLIANCE FIX]: RTCP paketlerini (Payload Type 192-205) tespit et.
+                        // RTCP paketlerini (Payload Type 192-205) tespit et.
                         let is_rtcp = len >= 2 && (buf[0] >> 6 == 2) && (buf[1] >= 192 && buf[1] <= 205);
 
                         if is_internal {
-                            let is_docker_gw = is_docker_gateway(src.ip());
-
-                            // [CRITICAL FIX]: Latching Logic Revised
+                            // [ARCH-COMPLIANCE FIX]: Docker Gateway kontrolü (is_docker_gw) tamamen kaldırıldı.
+                            // NAT arkasından gelen Media Service paketlerine kilitlenmek (Latch) için kısıtlama olmamalı.
                             let should_latch = match peer_internal {
-                                None => !is_docker_gw && !is_rtcp,
+                                None => !is_rtcp,
                                 Some(curr) => {
-                                    if !internal_latched && !is_docker_gw && !is_rtcp {
-                                        // Henüz kesin kilitlenmediyse (Sadece PRE-LATCH varsa), ilk gelen geçerli RTP paketiyle KİLİTLEN.
-                                        true
-                                    } else if curr.ip() != src.ip() && !is_docker_gw && !is_rtcp {
-                                        // Kesin kilitlense BİLE IP adresi tamamen değiştiyse (Network Handover) YENİDEN KİLİTLEN.
-                                        true
-                                    } else {
-                                        // Kesin kilitli ve IP aynı. Sadece port değişmişse (RTCP olabilir), KİLİDİ BOZMA.
-                                        false
-                                    }
+                                    (!internal_latched || curr.ip() != src.ip()) && !is_rtcp
                                 }
                             };
 
                             if should_latch {
-                                tracing::info!(
+                                info!(
                                     event = "RTP_LATCH_INTERNAL",
                                     trace_id = %call_id,
                                     sip.call_id = %call_id,
                                     rtp.port = port,
                                     net.peer.ip = %src.ip(),
                                     net.peer.port = src.port(),
-                                    "🏢[LATCH-INT] İç Bacak Kesin Olarak Kilitlendi (Strict Latch)"
+                                    "🏢[LATCH-INT] İç Bacak Kesin Olarak Kilitlendi (NAT Override)"
                                 );
                                 peer_internal = Some(src);
                                 internal_latched = true;
@@ -241,7 +224,7 @@ async fn run_relay_loop(
 
                             if let Some(dst) = peer_external {
                                 if let Err(e) = socket.send_to(&buf[..len], dst).await {
-                                    tracing::warn!(
+                                    warn!(
                                         event = "RTP_UDP_SEND_ERROR",
                                         sip.call_id = %call_id,
                                         rtp.port = port,
@@ -250,28 +233,26 @@ async fn run_relay_loop(
                                         "RTP paketi hedefe (Dış) gönderilemedi."
                                     );
                                 }
+                            } else {
+                                // [GÖZLEMLENEBİLİRLİK FIX]: Hedef yoksa sessizce düşme, SUTS log at.
+                                debug!(
+                                    event = "RTP_BLIND_DROP_EXTERNAL",
+                                    sip.call_id = %call_id,
+                                    "İç ağdan RTP paketi geldi ancak Dış hedef (Müşteri) henüz kilitlenmediği için paket düşürüldü."
+                                );
                             }
 
                         } else {
-                            // [CRITICAL FIX]: Latching Logic Revised (External)
+                            // Dış bacak (Müşteri) için Latching Logic
                             let should_latch = match peer_external {
                                 None => !is_rtcp,
                                 Some(curr) => {
-                                    if !external_latched && !is_rtcp {
-                                        // SDP'den gelen tahmini porta (PRE-LATCH) güvenme. Dışarıdan gelen İLK gerçek RTP (ses) pakediyle portu ez ve KİLİTLEN.
-                                        true
-                                    } else if curr.ip() != src.ip() && !is_rtcp {
-                                        // Mobil istemci Wi-Fi'dan 4G'ye geçti. IP değişti. Yeni IP'ye KİLİTLEN.
-                                        true
-                                    } else {
-                                        // Kesin kilitlendik ve IP aynı. Sadece port değiştiyse (Örn: RTCP pakedi geldi) KİLİDİ BOZMA.
-                                        false
-                                    }
+                                    (!external_latched || curr.ip() != src.ip()) && !is_rtcp
                                 }
                             };
 
                             if should_latch {
-                                tracing::info!(
+                                info!(
                                     event = "RTP_LATCH_EXTERNAL",
                                     trace_id = %call_id,
                                     sip.call_id = %call_id,
@@ -284,11 +265,9 @@ async fn run_relay_loop(
                                 external_latched = true;
                             }
 
-                            // [CRITICAL FIX]: Gelen paket RTCP olsa bile içeriye (Media Service'e) yollamaya devam et.
-                            // Latching yapmamak (kilitlenmemek) paketi çöpe atmak anlamına gelmez!
                             if let Some(dst) = peer_internal {
                                 if let Err(e) = socket.send_to(&buf[..len], dst).await {
-                                    tracing::warn!(
+                                    warn!(
                                         event = "RTP_UDP_SEND_ERROR",
                                         sip.call_id = %call_id,
                                         rtp.port = port,
@@ -297,12 +276,19 @@ async fn run_relay_loop(
                                         "RTP paketi hedefe (İç) gönderilemedi."
                                     );
                                 }
+                            } else {
+                                // [GÖZLEMLENEBİLİRLİK FIX]: Hedef yoksa sessizce düşme, SUTS log at.
+                                debug!(
+                                    event = "RTP_BLIND_DROP_INTERNAL",
+                                    sip.call_id = %call_id,
+                                    "Dış ağdan (Müşteri) RTP paketi geldi ancak İç hedef (Media Service) henüz kilitlenmediği için paket düşürüldü."
+                                );
                             }
                         }
                     }
                     Ok(Err(_)) => break,
                     Err(_) => {
-                        tracing::warn!(
+                        warn!(
                             event = "RTP_RELAY_TIMEOUT",
                             trace_id = %call_id,
                             sip.call_id = %call_id,
