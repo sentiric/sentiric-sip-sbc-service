@@ -208,10 +208,21 @@ async fn run_relay_loop(
                         if is_internal {
                             let is_docker_gw = is_docker_gateway(src.ip());
 
-                            // [CLIPPY FIX]: if-same-then-else ve needless_bool çözümü
+                            // [CRITICAL FIX]: Latching Logic Revised
                             let should_latch = match peer_internal {
                                 None => !is_docker_gw && !is_rtcp,
-                                Some(curr) => !is_docker_gw && !is_rtcp && (!internal_latched || curr.ip() != src.ip()),
+                                Some(curr) => {
+                                    if !internal_latched && !is_docker_gw && !is_rtcp {
+                                        // Henüz kesin kilitlenmediyse (Sadece PRE-LATCH varsa), ilk gelen geçerli RTP paketiyle KİLİTLEN.
+                                        true
+                                    } else if curr.ip() != src.ip() && !is_docker_gw && !is_rtcp {
+                                        // Kesin kilitlense BİLE IP adresi tamamen değiştiyse (Network Handover) YENİDEN KİLİTLEN.
+                                        true
+                                    } else {
+                                        // Kesin kilitli ve IP aynı. Sadece port değişmişse (RTCP olabilir), KİLİDİ BOZMA.
+                                        false
+                                    }
+                                }
                             };
 
                             if should_latch {
@@ -242,10 +253,21 @@ async fn run_relay_loop(
                             }
 
                         } else {
-                            // [CLIPPY FIX]: if-same-then-else ve needless_bool çözümü
+                            // [CRITICAL FIX]: Latching Logic Revised (External)
                             let should_latch = match peer_external {
                                 None => !is_rtcp,
-                                Some(curr) => !is_rtcp && (!external_latched || curr.ip() != src.ip()),
+                                Some(curr) => {
+                                    if !external_latched && !is_rtcp {
+                                        // SDP'den gelen tahmini porta (PRE-LATCH) güvenme. Dışarıdan gelen İLK gerçek RTP (ses) pakediyle portu ez ve KİLİTLEN.
+                                        true
+                                    } else if curr.ip() != src.ip() && !is_rtcp {
+                                        // Mobil istemci Wi-Fi'dan 4G'ye geçti. IP değişti. Yeni IP'ye KİLİTLEN.
+                                        true
+                                    } else {
+                                        // Kesin kilitlendik ve IP aynı. Sadece port değiştiyse (Örn: RTCP pakedi geldi) KİLİDİ BOZMA.
+                                        false
+                                    }
+                                }
                             };
 
                             if should_latch {
@@ -262,6 +284,8 @@ async fn run_relay_loop(
                                 external_latched = true;
                             }
 
+                            // [CRITICAL FIX]: Gelen paket RTCP olsa bile içeriye (Media Service'e) yollamaya devam et.
+                            // Latching yapmamak (kilitlenmemek) paketi çöpe atmak anlamına gelmez!
                             if let Some(dst) = peer_internal {
                                 if let Err(e) = socket.send_to(&buf[..len], dst).await {
                                     tracing::warn!(
