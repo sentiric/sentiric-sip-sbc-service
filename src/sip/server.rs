@@ -160,6 +160,7 @@ impl SipServer {
                                         let _ = self.transport.send(&trying_bytes, src_addr).await;
                                     }
 
+                                    // [ARCH-COMPLIANCE] SUTS v4.2: Her paket alımı detayı DEBUG'a çekildi.
                                     debug!(
                                         event = "SIP_PACKET_RECEIVED",
                                         sip.call_id = %call_id,
