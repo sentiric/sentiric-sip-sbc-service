@@ -1,4 +1,4 @@
-// Dosya: sentiric-sip-sbc-service/src/rtp/engine.rs
+// Dosya: src/rtp/engine.rs
 use dashmap::DashMap;
 use rand::Rng;
 use std::net::{IpAddr, SocketAddr};
@@ -86,7 +86,8 @@ impl RtpEngine {
                 let stop_rx = tx.subscribe();
 
                 tokio::spawn(async move {
-                    info!(
+                    // [SUTS v4.0]: LOG (Gürültü Koruması - DEBUG)
+                    debug!(
                         event = "RTP_RELAY_STARTED",
                         sip.call_id = %call_id_owned,
                         rtp.port = port,
@@ -128,7 +129,8 @@ impl RtpEngine {
             if let Some((_, relay)) = self.active_relays.remove(&port) {
                 let _ = relay.stop_signal.send(());
 
-                info!(
+                // [SUTS v4.0]: LOG (Gürültü Koruması - DEBUG)
+                debug!(
                     event = "RTP_RELAY_RELEASED",
                     trace_id = %call_id,
                     sip.call_id = %call_id,
@@ -169,7 +171,7 @@ async fn run_relay_loop(
 
     if let Some(target) = initial_peer {
         if is_internal_ip(target.ip()) {
-            info!(
+            debug!(
                 event="RTP_PRE_LATCH",
                 sip.call_id = %call_id,
                 target=%target,
@@ -177,7 +179,7 @@ async fn run_relay_loop(
             );
             peer_internal = Some(target);
         } else {
-            info!(
+            debug!(
                 event="RTP_PRE_LATCH",
                 sip.call_id = %call_id,
                 target=%target,
@@ -195,12 +197,9 @@ async fn run_relay_loop(
                     Ok(Ok((len, src))) => {
                         let is_internal = is_internal_ip(src.ip());
 
-                        // RTCP paketlerini (Payload Type 192-205) tespit et.
                         let is_rtcp = len >= 2 && (buf[0] >> 6 == 2) && (buf[1] >= 192 && buf[1] <= 205);
 
                         if is_internal {
-                            // [ARCH-COMPLIANCE FIX]: Docker Gateway kontrolü (is_docker_gw) tamamen kaldırıldı.
-                            // NAT arkasından gelen Media Service paketlerine kilitlenmek (Latch) için kısıtlama olmamalı.
                             let should_latch = match peer_internal {
                                 None => !is_rtcp,
                                 Some(curr) => {
@@ -234,7 +233,6 @@ async fn run_relay_loop(
                                     );
                                 }
                             } else {
-                                // [GÖZLEMLENEBİLİRLİK FIX]: Hedef yoksa sessizce düşme, SUTS log at.
                                 debug!(
                                     event = "RTP_BLIND_DROP_EXTERNAL",
                                     sip.call_id = %call_id,
@@ -243,7 +241,6 @@ async fn run_relay_loop(
                             }
 
                         } else {
-                            // Dış bacak (Müşteri) için Latching Logic
                             let should_latch = match peer_external {
                                 None => !is_rtcp,
                                 Some(curr) => {
@@ -277,7 +274,6 @@ async fn run_relay_loop(
                                     );
                                 }
                             } else {
-                                // [GÖZLEMLENEBİLİRLİK FIX]: Hedef yoksa sessizce düşme, SUTS log at.
                                 debug!(
                                     event = "RTP_BLIND_DROP_INTERNAL",
                                     sip.call_id = %call_id,

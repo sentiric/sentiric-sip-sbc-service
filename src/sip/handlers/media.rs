@@ -5,7 +5,7 @@ use regex::Regex;
 use sentiric_sip_core::{sdp::SdpManipulator, Header, HeaderName, SipPacket};
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tracing::{info, warn};
+use tracing::{debug, warn};
 
 pub struct MediaHandler {
     rtp_engine: Arc<RtpEngine>,
@@ -38,7 +38,6 @@ impl MediaHandler {
         let mut extracted_port = 0u16;
 
         for line in sdp_str.lines() {
-            // [CLIPPY FIX]: manual_strip
             if let Some(stripped) = line.strip_prefix("c=IN IP4 ") {
                 extracted_ip = stripped.trim();
             }
@@ -91,8 +90,8 @@ impl MediaHandler {
                 packet.body.len().to_string(),
             ));
 
-            // [SUTS v4.0]: LOG
-            info!(
+            // [SUTS v4.0]: LOG (Gürültü Koruması - DEBUG)
+            debug!(
                 event = "SDP_REWRITE_SUCCESS",
                 sip.call_id = %call_id,
                 rtp.port = relay_port,

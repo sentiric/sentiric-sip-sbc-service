@@ -19,14 +19,12 @@ pub struct DnsCache {
     cache: DashMap<String, (SocketAddr, Instant)>,
 }
 
-// [CLIPPY FIX]: new_without_default
 impl Default for DnsCache {
     fn default() -> Self {
         Self::new()
     }
 }
 
-// [ARCH-COMPLIANCE] resolve fonksiyonu call_id argümanı alacak şekilde güncellendi.
 impl DnsCache {
     pub fn new() -> Self {
         Self {
@@ -47,10 +45,11 @@ impl DnsCache {
             }
         }
 
-        let mut backoff = 100;
-        for attempt in 1..=5 {
+        // [ARCH-COMPLIANCE FIX] Fail-fast: 5x500ms yerine 2x150ms bekleme
+        let mut backoff = 50;
+        for attempt in 1..=2 {
             match tokio::time::timeout(
-                Duration::from_millis(500),
+                Duration::from_millis(150),
                 tokio::net::lookup_host(hostname),
             )
             .await
@@ -62,10 +61,10 @@ impl DnsCache {
                     }
                 }
                 Ok(Err(e)) => {
-                    tracing::debug!(event="DNS_RETRY", sip.call_id=%call_id, attempt=attempt, host=%hostname, error=%e, "DNS çözümü gecikti, tekrar deneniyor...");
+                    debug!(event="DNS_RETRY", sip.call_id=%call_id, attempt=attempt, host=%hostname, error=%e, "DNS çözümü gecikti, tekrar deneniyor...");
                 }
                 Err(_) => {
-                    tracing::warn!(event="DNS_TIMEOUT", sip.call_id=%call_id, attempt=attempt, host=%hostname, "DNS çözümü 500ms timeout süresini aştı.");
+                    warn!(event="DNS_TIMEOUT", sip.call_id=%call_id, attempt=attempt, host=%hostname, "DNS çözümü timeout süresini aştı.");
                 }
             }
             tokio::time::sleep(Duration::from_millis(backoff)).await;
@@ -117,8 +116,16 @@ impl SipServer {
             protocol = "UDP",
             "📡 SBC Sinyalleşme Sunucusu Aktif"
         );
-        let mut buf = vec![0u8; 65535];
+
         let socket = self.transport.get_socket();
+
+        // Arc yapılar spawn blokları arasında paylaşılabilmesi için kopyalanır.
+        let engine = Arc::new(self.engine);
+        let dns_cache = self.dns_cache.clone();
+        let transport = self.transport.clone();
+        let config = self.config.clone();
+
+        let mut buf = vec![0u8; 65535];
 
         loop {
             tokio::select! {
@@ -132,55 +139,62 @@ impl SipServer {
                                 continue;
                             }
 
-                            match parser::parse(&buf[..len]) {
-                                Ok(packet) => {
-                                    let call_id = packet.get_header_value(HeaderName::CallId).cloned().unwrap_or_default();
+                            // Thread sınırından geçebilmek için UDP veri paketini vektör haline getiriyoruz (Move ownership).
+                            let payload = buf[..len].to_vec();
 
-                                    //[ARCH-COMPLIANCE] TYPE FIX: status_code is u16 natively.
-                                    let method = if packet.is_request() {
-                                        packet.method.as_str().to_string()
-                                    } else {
-                                        format!("RESPONSE/{}", packet.status_code)
-                                    };
+                            let engine_clone = engine.clone();
+                            let transport_clone = transport.clone();
+                            let dns_cache_clone = dns_cache.clone();
+                            let config_clone = config.clone();
 
-                                    if packet.is_request && packet.method == Method::Invite {
-                                        let trying_packet = SipResponseFactory::create_100_trying(&packet);
-                                        let trying_bytes = trying_packet.to_bytes();
-                                        // [ARCH-COMPLIANCE] INFO yerine DEBUG yapıldı. Disk I/O tasarrufu!
+                            tokio::spawn(async move {
+                                match parser::parse(&payload) {
+                                    Ok(packet) => {
+                                        let call_id = packet.get_header_value(HeaderName::CallId).cloned().unwrap_or_default();
+
+                                        let method = if packet.is_request() {
+                                            packet.method.as_str().to_string()
+                                        } else {
+                                            format!("RESPONSE/{}", packet.status_code)
+                                        };
+
+                                        if packet.is_request() && packet.method == Method::Invite {
+                                            let trying_packet = SipResponseFactory::create_100_trying(&packet);
+                                            let trying_bytes = trying_packet.to_bytes();
+                                            debug!(
+                                                event = "SIP_EGRESS",
+                                                sip.call_id = %call_id,
+                                                sip.method = "100",
+                                                net.dst.ip = %src_addr.ip(),
+                                                net.dst.port = src_addr.port(),
+                                                packet.summary = "SIP/2.0 100 Trying",
+                                                "📤[SBC->UAC] 100 Trying gönderildi"
+                                            );
+
+                                            let _ = transport_clone.send(&trying_bytes, src_addr).await;
+                                        }
+
                                         debug!(
-                                            event = "SIP_EGRESS",
+                                            event = "SIP_PACKET_RECEIVED",
                                             sip.call_id = %call_id,
-                                            sip.method = "100",
-                                            net.dst.ip = %src_addr.ip(),
-                                            net.dst.port = src_addr.port(),
-                                            packet.summary = "SIP/2.0 100 Trying",
-                                            "📤[SBC->UAC] 100 Trying gönderildi"
+                                            sip.method = %method,
+                                            net.src.ip = %src_addr.ip(),
+                                            net.src.port = src_addr.port(),
+                                            "📥 SIP paketi alındı"
                                         );
 
-                                        let _ = self.transport.send(&trying_bytes, src_addr).await;
-                                    }
-
-                                    // [ARCH-COMPLIANCE] SUTS v4.2: Her paket alımı detayı DEBUG'a çekildi.
-                                    debug!(
-                                        event = "SIP_PACKET_RECEIVED",
-                                        sip.call_id = %call_id,
-                                        sip.method = %method,
-                                        net.src.ip = %src_addr.ip(),
-                                        net.src.port = src_addr.port(),
-                                        "📥 SIP paketi alındı"
-                                    );
-
-                                    if let SipAction::Forward(mut processed) = self.engine.inspect(packet, src_addr).await {
-                                        self.route_packet(&mut processed, src_addr).await;
-                                    }
-                                },
-                                Err(e) => warn!(
-                                    event = "SIP_PARSE_ERROR",
-                                    net.peer.ip = %src_addr.ip(),
-                                    error = %e,
-                                    "⚠️ Bozuk veya geçersiz SIP paketi alındı"
-                                ),
-                            }
+                                        if let SipAction::Forward(mut processed) = engine_clone.inspect(packet, src_addr).await {
+                                            Self::route_packet_static(&mut processed, src_addr, &dns_cache_clone, &transport_clone, &config_clone).await;
+                                        }
+                                    },
+                                    Err(e) => warn!(
+                                        event = "SIP_PARSE_ERROR",
+                                        net.peer.ip = %src_addr.ip(),
+                                        error = %e,
+                                        "⚠️ Bozuk veya geçersiz SIP paketi alındı"
+                                    ),
+                                }
+                            });
                         },
                         Err(e) => error!(event="SIP_SOCKET_ERROR", error=%e, "🔥 UDP Socket okuma hatası"),
                     }
@@ -189,16 +203,19 @@ impl SipServer {
         }
     }
 
-    async fn route_packet(&self, packet: &mut SipPacket, src_addr: SocketAddr) {
+    async fn route_packet_static(
+        packet: &mut SipPacket,
+        src_addr: SocketAddr,
+        dns_cache: &DnsCache,
+        transport: &SipTransport,
+        config: &AppConfig,
+    ) {
         let call_id = packet
             .get_header_value(HeaderName::CallId)
             .cloned()
             .unwrap_or_default();
-        // [ARCH-COMPLIANCE] resolve işlemine call_id aktarıldı
-        let proxy_addr_opt = self
-            .dns_cache
-            .resolve(&self.config.proxy_sip_addr, &call_id)
-            .await;
+
+        let proxy_addr_opt = dns_cache.resolve(&config.proxy_sip_addr, &call_id).await;
 
         let target_addr = if packet.is_request() {
             if let Some(proxy_addr) = proxy_addr_opt {
@@ -226,14 +243,12 @@ impl SipServer {
                 .cloned()
                 .unwrap_or_default();
 
-            // [ARCH-COMPLIANCE] TYPE FIX
             let method = if packet.is_request() {
                 packet.method.as_str().to_string()
             } else {
                 format!("RESPONSE/{}", packet.status_code)
             };
 
-            // [ARCH-COMPLIANCE] INFO yerine DEBUG yapıldı. Disk I/O tasarrufu!
             debug!(
                 event = "SIP_EGRESS_FULL",
                 sip.call_id = %call_id,
@@ -245,7 +260,7 @@ impl SipServer {
                 "📤[SBC->NEXT] Paket yönlendiriliyor (Tam Döküm)"
             );
 
-            if let Err(e) = self.transport.send(&packet_bytes, target).await {
+            if let Err(e) = transport.send(&packet_bytes, target).await {
                 error!(
                     event = "SIP_SEND_ERROR",
                     sip.call_id = %call_id,

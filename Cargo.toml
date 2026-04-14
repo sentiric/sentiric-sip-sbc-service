@@ -1,7 +1,7 @@
 # Dosya: Cargo.toml
 [package]
 name = "sentiric-sip-sbc-service"
-version = "1.5.18"
+version = "1.5.19"
 edition = "2021"
 
 [dependencies]
@@ -36,4 +36,4 @@ regex = "1"
 # --- THE IRON CORE (STANDARD v2.0) ---
 sentiric-rtp-core = { git = "https://github.com/sentiric/sentiric-rtp-core.git", tag = "v1.6.1" }
 sentiric-sip-core = { git = "https://github.com/sentiric/sentiric-sip-core.git", tag = "v1.5.6" }
-sentiric-contracts = { git = "https://github.com/sentiric/sentiric-contracts.git", tag = "v1.20.8" }
+sentiric-contracts = { git = "https://github.com/sentiric/sentiric-contracts.git", tag = "v1.21.1" }

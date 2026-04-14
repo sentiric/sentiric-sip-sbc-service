@@ -1,4 +1,4 @@
-.PHONY: all setup check lint build test clean
+.PHONY: all setup check lint fix build test clean
 
 all: check lint build
 
@@ -10,9 +10,15 @@ check:
 	@echo "🔍 Checking code for compilation errors..."
 	cargo check
 
-lint:
-	@echo "🧹 Running linter and formatter..."
+fix:
+	@echo "🔧 Auto-fixing issues..."
+	cargo fix --allow-dirty
+	find . -path ./target -prune -o -name "*.rs" -exec sed -i 's/[[:space:]]*$$//' {} +
 	cargo fmt
+
+lint:
+	@echo "🧹 Running linter and formatter (check mode)..."
+	cargo fmt -- --check
 	cargo clippy -- -D warnings
 
 build:
