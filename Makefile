@@ -12,6 +12,7 @@ check:
 
 fix:
 	@echo "🔧 Auto-fixing issues..."
+	cargo clippy --fix --allow-dirty -- -D warnings
 	cargo fix --allow-dirty
 	find . -path ./target -prune -o -name "*.rs" -exec sed -i 's/[[:space:]]*$$//' {} +
 	cargo fmt

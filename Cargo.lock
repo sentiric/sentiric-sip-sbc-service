@@ -1452,8 +1452,8 @@ dependencies = [
 
 [[package]]
 name = "sentiric-rtp-core"
-version = "1.6.1"
-source = "git+https://github.com/sentiric/sentiric-rtp-core.git?tag=v1.6.1#ac14b6b3e5f4495c7f9e6f68f97ee641f01ccf25"
+version = "1.6.2"
+source = "git+https://github.com/sentiric/sentiric-rtp-core.git?tag=v1.6.2#fb8f32768367fe12825740c8df7ba97655c0e9e2"
 dependencies = [
  "cc",
  "glob",
@@ -1475,7 +1475,7 @@ dependencies = [
 
 [[package]]
 name = "sentiric-sip-sbc-service"
-version = "1.5.19"
+version = "1.5.20"
 dependencies = [
  "anyhow",
  "chrono",
